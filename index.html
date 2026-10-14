@@ -82,6 +82,18 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--pink); outl
 .no .mark { color: var(--pink); }
 .review .q { font-size: 15px; color: var(--muted); }
 .review .a { min-width: 0; overflow-wrap: anywhere; }
+.board-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.board { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.board li {
+  display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center;
+  padding: 10px 14px; border-radius: 12px; background: var(--bg);
+}
+.board li.me { background: var(--pink-soft); outline: 2px solid var(--pink); }
+.board .pos { font-family: var(--font-display); font-size: 20px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.board li:nth-child(-n+3) .pos { color: var(--accent); }
+.board .who { min-width: 0; overflow-wrap: anywhere; }
+.board .pts { font-family: var(--font-display); font-size: 20px; font-variant-numeric: tabular-nums; }
+.board .empty { display: block; color: var(--muted); text-align: center; }
 @media (prefers-reduced-motion: reduce) { .dot { transition: none; } }
 </style>
 </head>
@@ -100,7 +112,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--pink); outl
     </div>
     <p class="hint" id="startHint"></p>
     <div class="row">
-      <span class="book">문제 4개 · 한 문제씩 풀어요</span>
+      <button type="button" class="ghost" id="showBoard">전체 순위 보기</button>
       <button type="submit">시작하기</button>
     </div>
   </form>
@@ -125,9 +137,16 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--pink); outl
     <div class="rank">
       <b id="rank">…</b>
       <span id="rankSub">점수를 저장하고 있어요</span>
-      <button type="button" class="ghost small" id="refresh" hidden>순위 새로고침</button>
     </div>
     <ul class="review" id="review"></ul>
+  </section>
+
+  <section class="card" id="boardCard" hidden>
+    <div class="board-head">
+      <h2>전체 순위</h2>
+      <button type="button" class="ghost small" id="refresh">새로고침</button>
+    </div>
+    <ol class="board" id="board"></ol>
   </section>
 </div>
 
@@ -148,7 +167,7 @@ const norm = s => s.replace(/\s+/g, "").trim();
 const isRight = (i, a) => QUESTIONS[i].accept.map(norm).includes(norm(a));
 
 const $ = id => document.getElementById(id);
-let name = "", idx = 0, answers = QUESTIONS.map(() => ""), myScore = 0;
+let name = "", idx = 0, answers = QUESTIONS.map(() => ""), myScore = 0, myId = null;
 
 $("start").addEventListener("submit", e => {
   e.preventDefault();
@@ -204,33 +223,65 @@ async function finish() {
   try {
     const res = await fetch(API, {
       method: "POST",
-      headers: { ...HEADERS, Prefer: "return=minimal" },
+      headers: { ...HEADERS, Prefer: "return=representation" },
       body: JSON.stringify({ name, score: myScore, answers }),
     });
     if (!res.ok) throw new Error(res.status);
-    await loadRank();
+    const [row] = await res.json();
+    myId = row ? row.id : null;
   } catch (err) {
     setRank("–", "점수를 저장하지 못했어요. 선생님께 알려 주세요.");
+    return;
   }
+  await loadBoard();
 }
 
-async function loadRank() {
+// 전체 순위: 점수 높은 순, 같은 점수는 같은 등수 (먼저 낸 사람이 위)
+async function loadBoard() {
+  $("boardCard").hidden = false;
   try {
-    const res = await fetch(API + "?select=score", { headers: HEADERS });
+    const res = await fetch(API + "?select=id,name,score&order=score.desc,created_at.asc", { headers: HEADERS });
     if (!res.ok) throw new Error(res.status);
-    const scores = (await res.json()).map(r => Number(r.score) || 0);
-    const higher = scores.filter(s => s > myScore).length;
-    const same = scores.filter(s => s === myScore).length;
-    const tie = same > 1 ? ` · 같은 점수 ${same}명` : "";
-    setRank(`${higher + 1}등`, `제출한 ${scores.length}명 중${tie}`);
-    $("refresh").hidden = false;
+    const rows = await res.json();
+    const ranked = rows.map(r => ({ ...r, pos: rows.filter(o => o.score > r.score).length + 1 }));
+    renderBoard(ranked);
+    const me = ranked.find(r => r.id === myId);
+    if (me) {
+      const same = ranked.filter(r => r.score === me.score).length;
+      setRank(`${me.pos}등`, `제출한 ${ranked.length}명 중${same > 1 ? ` · 같은 점수 ${same}명` : ""}`);
+    }
   } catch (err) {
-    setRank("–", "순위를 불러오지 못했어요. 잠시 후 새로고침을 눌러 주세요.");
-    $("refresh").hidden = false;
+    $("board").innerHTML = `<li><span class="empty">순위를 불러오지 못했어요. 새로고침을 눌러 주세요.</span></li>`;
+    if (myId !== null) setRank("–", "순위를 불러오지 못했어요");
   }
 }
 
-$("refresh").addEventListener("click", loadRank);
+function renderBoard(ranked) {
+  const list = $("board");
+  list.innerHTML = "";
+  if (!ranked.length) {
+    list.innerHTML = `<li><span class="empty">아직 제출한 사람이 없어요</span></li>`;
+    return;
+  }
+  ranked.forEach(r => {
+    const li = document.createElement("li");
+    if (r.id === myId) li.className = "me";
+    li.innerHTML = `<span class="pos"></span><span class="who"></span><span class="pts"></span>`;
+    li.querySelector(".pos").textContent = `${r.pos}등`;
+    li.querySelector(".who").textContent = r.id === myId ? `${r.name} (나)` : r.name;
+    li.querySelector(".pts").textContent = `${r.score}점`;
+    list.appendChild(li);
+  });
+  const mine = list.querySelector(".me");
+  if (mine) mine.scrollIntoView({ block: "nearest" });
+}
+
+$("refresh").addEventListener("click", loadBoard);
+$("showBoard").addEventListener("click", () => {
+  $("boardCard").hidden = false;
+  loadBoard();
+  $("boardCard").scrollIntoView({ behavior: "smooth", block: "start" });
+});
 
 function setRank(big, sub) {
   $("rank").textContent = big;
